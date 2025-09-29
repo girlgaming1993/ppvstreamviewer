@@ -1,0 +1,145 @@
+<!-- templates/select.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Select Streams</title>
+  <style>
+    :root{--gap:12px;--muted:#666}
+    body{margin:0;font:14px system-ui,sans-serif;background:#fafafa}
+    header{position:sticky;top:0;background:#fff;border-bottom:1px solid #eee;padding:10px}
+    .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    input, select, button{padding:8px;border:1px solid #ddd;border-radius:8px}
+    button{cursor:pointer}
+    .grid{padding:14px;display:grid;gap:var(--gap);grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+    .card{background:#fff;border:1px solid #eee;border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+    .poster{aspect-ratio:16/9;background:#000;width:100%;object-fit:cover}
+    .content{padding:10px;display:flex;gap:10px}
+    .meta{flex:1}
+    .title{font-weight:600;margin:0 0 4px}
+    .sub{color:var(--muted);font-size:12px;margin:0}
+    .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid #eee}
+    .live{border-color:#f33}
+    .upcoming{border-color:#f90}
+    .ended{border-color:#aaa;color:#777}
+    .footer{display:flex;justify-content:space-between;align-items:center;padding:10px;border-top:1px solid #f1f1f1}
+    .count{color:var(--muted)}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="toolbar">
+      <input id="q" placeholder="Search by title, tag, category…" />
+      <select id="status">
+        <option value="">Any status</option>
+        <option value="live">Live</option>
+        <option value="upcoming">Upcoming</option>
+        <option value="ended">Ended</option>
+      </select>
+      <select id="category"><option value="">All categories</option></select>
+      <button id="refresh">Refresh</button>
+      <button id="proceed" title="Use the selected streams">Use Selected</button>
+      <span class="count" id="count"></span>
+    </div>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <script>
+    const grid = document.getElementById('grid');
+    const q = document.getElementById('q');
+    const status = document.getElementById('status');
+    const category = document.getElementById('category');
+    const refreshBtn = document.getElementById('refresh');
+    const proceedBtn = document.getElementById('proceed');
+    const countEl = document.getElementById('count');
+
+    const state = { items: [], selected: new Set(), categories: new Set() };
+
+    function fmtTime(ts){
+      if(!ts) return '';
+      const d = new Date(ts*1000);
+      return d.toLocaleString();
+    }
+
+    function badgeClass(s){
+      return s==='live'?'pill live':s==='upcoming'?'pill upcoming':'pill ended';
+    }
+
+    function cardHTML(s){
+      const checked = state.selected.has(s.id) ? 'checked' : '';
+      return `
+      <div class="card" data-id="${s.id}">
+        <img class="poster" loading="lazy" src="${s.poster || ''}" alt="">
+        <div class="content">
+          <input type="checkbox" ${checked} />
+          <div class="meta">
+            <p class="title">${s.name || 'Untitled'}</p>
+            <p class="sub">${s.category || ''}${s.tag ? ' • ' + s.tag : ''}</p>
+            <p class="sub">Start: ${fmtTime(s.starts_at)} • End: ${fmtTime(s.ends_at)}</p>
+            <span class="${badgeClass(s.status)}">${s.status}</span>
+            ${s.allowpaststreams ? ' <span class="pill">Past OK</span>' : ''}
+          </div>
+        </div>
+        <div class="footer">
+          <small class="sub">${s.uri_name || ''}</small>
+          ${s.iframe ? '<small class="sub">iframe ready</small>' : ''}
+        </div>
+      </div>`;
+    }
+
+    function render(){
+      grid.innerHTML = state.items.map(cardHTML).join('');
+      countEl.textContent = `${state.items.length} shown • ${state.selected.size} selected`;
+      // wire up checkboxes
+      grid.querySelectorAll('.card input[type="checkbox"]').forEach(cb=>{
+        cb.addEventListener('change', e=>{
+          const id = parseInt(cb.closest('.card').dataset.id,10);
+          if(e.target.checked) state.selected.add(id);
+          else state.selected.delete(id);
+          countEl.textContent = `${state.items.length} shown • ${state.selected.size} selected`;
+        });
+      });
+    }
+
+    async function load(){
+      const params = new URLSearchParams();
+      if(q.value.trim()) params.set('q', q.value.trim());
+      if(status.value) params.set('status', status.value);
+      if(category.value) params.set('category', category.value);
+
+      const res = await fetch('/api/streams?'+params.toString());
+      const data = await res.json();
+      state.items = data.items || [];
+
+      // categories (one-time fill, simple)
+      if(state.categories.size === 0){
+        (data.items || []).forEach(s => state.categories.add(s.category));
+        const opts = ['<option value="">All categories</option>']
+          .concat([...state.categories].sort().map(c=>`<option>${c}</option>`));
+        category.innerHTML = opts.join('');
+      }
+      render();
+    }
+
+    q.addEventListener('input', debounce(load, 200));
+    status.addEventListener('change', load);
+    category.addEventListener('change', load);
+    refreshBtn.addEventListener('click', load);
+
+    proceedBtn.addEventListener('click', ()=>{
+      const ids = [...state.selected];
+      if(ids.length === 0){ alert('Select at least one stream.'); return; }
+      location.href = '/watch?ids=' + ids.join(',');
+    });
+
+
+    function debounce(fn, ms){
+      let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); };
+    }
+
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Watch</title>
+  <style>
+    :root { --rows: 1; --cols: 1; --gap: 8px; }
+    html, body { height: 100%; margin: 0; background: #000; color: #fff; font: 14px system-ui, sans-serif; }
+    header { position: sticky; top: 0; padding: 8px 10px; background: rgba(0,0,0,.6); backdrop-filter: blur(6px); display:flex; gap:10px; align-items:center; z-index:2; }
+    header a, header button { color:#fff; background:#222; border:1px solid #333; border-radius:8px; padding:6px 10px; text-decoration:none; cursor:pointer }
+
+    .grid {
+      height: calc(100vh - 44px);
+      display: grid;
+      grid-template-columns: repeat(var(--cols), 1fr);
+      grid-template-rows: repeat(var(--rows), 1fr);
+      gap: var(--gap);
+      padding: var(--gap);
+      box-sizing: border-box;
+    }
+
+    .tile { position: relative; background: #000; overflow: hidden; border-radius: 10px; }
+    .media, .media iframe, .media video { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    .warn { position:absolute; inset:0; display:grid; place-items:center; text-align:center; padding:20px; color:#ccc; background:#111; border:1px dashed #333; }
+
+    /* Hover-only drag handle */
+    .handle{
+      position:absolute; top:8px; left:8px; z-index:3;
+      width:28px; height:28px; border-radius:8px;
+      border:1px solid rgba(255,255,255,.25);
+      background: rgba(0,0,0,.45); backdrop-filter: blur(6px);
+      color:#fff; font:600 14px/28px system-ui; text-align:center;
+      cursor: grab; opacity:0; transition:opacity .15s ease;
+      pointer-events:auto;
+    }
+    .tile:hover .handle{ opacity:1; }
+    .handle:active{ cursor: grabbing; }
+
+    /* Drag visuals */
+    .ghost {
+      position: fixed; z-index: 9999; pointer-events: none;
+      border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.55);
+      outline: 2px dashed #4aa3ff; outline-offset: -2px;
+      background: rgba(74,163,255,.08);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" title="Back">⬅ Select</a>
+    <button id="toggle-gap">Toggle Gaps</button>
+    <span id="meta"></span>
+  </header>
+
+  <div class="grid" id="grid">
+    {% for s in streams %}
+      <div class="tile" data-id="{{ s.id }}">
+        <button class="handle" type="button" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</button>
+
+        {% if s.iframe %}
+          <div class="media">
+            <iframe
+              src="{{ s.iframe }}"
+              allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+              allowfullscreen
+              referrerpolicy="no-referrer-when-downgrade"
+              loading="lazy"></iframe>
+          </div>
+        {% else %}
+          <div class="warn">
+            <div>
+              <div style="font-weight:600;margin-bottom:8px">{{ s.name or 'Untitled' }}</div>
+              <div>No iframe available yet for this stream.</div>
+              {% if s.poster %}<div style="margin-top:12px"><img src="{{ s.poster }}" alt="" style="max-width:380px;width:100%;height:auto;border-radius:8px" /></div>{% endif %}
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  <script>
+    // --- grid sizing ---
+    function computeGrid(n){ const cols = Math.ceil(Math.sqrt(n)); const rows = Math.ceil(n / cols); return {rows, cols}; }
+    function applyGrid(){
+      const n = document.querySelectorAll('.tile').length;
+      const {rows, cols} = computeGrid(n);
+      document.documentElement.style.setProperty('--rows', rows);
+      document.documentElement.style.setProperty('--cols', cols);
+      document.getElementById('meta').textContent = `${n} stream${n>1?'s':''} • ${cols}×${rows}`;
+    }
+    document.getElementById('toggle-gap').addEventListener('click', ()=>{
+      const root = getComputedStyle(document.documentElement).getPropertyValue('--gap').trim();
+      document.documentElement.style.setProperty('--gap', root === '0px' ? '8px' : '0px');
+    });
+    addEventListener('resize', applyGrid);
+
+    // --- order syncing ---
+    const gridEl = document.getElementById('grid');
+    function getOrder(){ return [...gridEl.querySelectorAll('.tile')].map(t => t.dataset.id); }
+    function syncUrl(){ const ids = getOrder(); const u=new URL(location.href); u.searchParams.set('ids', ids.join(',')); history.replaceState(null,'',u); }
+
+    // --- robust drag: ghost follows cursor; original tile stays in grid (hidden) and is moved only when cell changes ---
+    let draggingTile = null;
+    let ghost = null;
+    let startOffset = {x:0, y:0}; // pointer offset within tile at grab
+    let lastTargetIndex = -1;
+
+    function readCssNumber(el, prop) {
+      const v = getComputedStyle(el).getPropertyValue(prop);
+      const n = parseFloat(v || '0'); return isNaN(n) ? 0 : n;
+    }
+
+    function gridMetrics(){
+      const cols = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cols')) || 1;
+      const rows = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--rows')) || 1;
+      const r = gridEl.getBoundingClientRect();
+      const gap = readCssNumber(gridEl, 'gap');
+      const padL = readCssNumber(gridEl, 'padding-left');
+      const padR = readCssNumber(gridEl, 'padding-right');
+      const padT = readCssNumber(gridEl, 'padding-top');
+      const padB = readCssNumber(gridEl, 'padding-bottom');
+
+      const innerW = r.width - padL - padR;
+      const innerH = r.height - padT - padB;
+
+      const cellW = (innerW - gap * (cols - 1)) / cols;
+      const cellH = (innerH - gap * (rows - 1)) / rows;
+
+      return {r, cols, rows, gap, padL, padT, cellW, cellH};
+    }
+
+    function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+
+    function indexFromPointer(clientX, clientY, m){
+      // map pointer to grid cell (r,c) using computed dimensions
+      const x = clamp(clientX - m.r.left - m.padL, 0, m.r.width - m.padL);
+      const y = clamp(clientY - m.r.top  - m.padT, 0, m.r.height - m.padT);
+      const col = clamp(Math.floor(x / (m.cellW + m.gap - 0.0001)), 0, m.cols - 1);
+      const row = clamp(Math.floor(y / (m.cellH + m.gap - 0.0001)), 0, m.rows - 1);
+      let idx = row * m.cols + col;
+      const maxIdx = gridEl.children.length - 1;
+      if (idx > maxIdx) idx = maxIdx;
+      return idx;
+    }
+
+    function moveTileToIndex(tile, idx){
+      const tiles = [...gridEl.children];
+      const cur = tiles.indexOf(tile);
+      if (cur === idx) return;
+      if (idx >= tiles.length - 1) {
+        gridEl.appendChild(tile);
+      } else {
+        const ref = tiles[idx + (idx > cur ? 1 : 0)];
+        gridEl.insertBefore(tile, ref);
+      }
+    }
+
+    function onPointerMove(e){
+      if(!draggingTile || !ghost) return;
+      // move ghost
+      ghost.style.left = `${e.clientX - startOffset.x}px`;
+      ghost.style.top  = `${e.clientY - startOffset.y}px`;
+
+      // compute intended index and move hidden tile only when index changes
+      const m = gridMetrics();
+      const targetIdx = indexFromPointer(e.clientX, e.clientY, m);
+      if (targetIdx !== lastTargetIndex) {
+        lastTargetIndex = targetIdx;
+        moveTileToIndex(draggingTile, targetIdx);
+      }
+    }
+
+    function endDrag(){
+      if(!draggingTile) return;
+      draggingTile.style.visibility = ''; // show again
+      document.body.removeChild(ghost);
+      ghost = null;
+      draggingTile = null;
+      lastTargetIndex = -1;
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', endDrag);
+      applyGrid();
+      syncUrl();
+    }
+
+    function startDragFrom(handle){
+      const tile = handle.closest('.tile');
+      draggingTile = tile;
+
+      // size of tile to render ghost
+      const r = tile.getBoundingClientRect();
+      ghost = document.createElement('div');
+      ghost.className = 'ghost';
+      ghost.style.width  = `${r.width}px`;
+      ghost.style.height = `${r.height}px`;
+      ghost.style.left   = `${r.left}px`;
+      ghost.style.top    = `${r.top}px`;
+      document.body.appendChild(ghost);
+
+      // hide the real tile so the iframe doesn't duplicate or capture events
+      tile.style.visibility = 'hidden';
+
+      // pointer offset so drag feels anchored at the handle
+      const hr = handle.getBoundingClientRect();
+      startOffset.x = hr.left + hr.width/2 - r.left;
+      startOffset.y = hr.top  + hr.height/2 - r.top;
+
+      // set initial target index to current index
+      lastTargetIndex = [...gridEl.children].indexOf(tile);
+
+      document.addEventListener('pointermove', onPointerMove, {passive:false});
+      document.addEventListener('pointerup', endDrag, {once:true});
+    }
+
+    function wireDnD(){
+      gridEl.querySelectorAll('.tile .handle').forEach(h=>{
+        h.addEventListener('pointerdown', (e)=>{
+          e.preventDefault();
+          startDragFrom(h);
+        });
+      });
+    }
+
+    // init
+    applyGrid();
+    wireDnD();
+    // normalize URL once on load
+    syncUrl();
+  </script>
+</body>
+</html>
